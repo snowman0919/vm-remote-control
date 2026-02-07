@@ -520,7 +520,9 @@ class VncDriver implements BackendDriver {
 
   async captureFrame(): Promise<Frame> {
     const filePath = `/tmp/vmrc_vnc_${this.host.replace(/\W/g, '_')}_${this.port}.png`;
-    const args = ['-quiet', '-host', this.host, '-port', String(this.port), filePath];
+    const display = Math.max(0, this.port - 5900);
+    const target = `${this.host}:${display}`;
+    const args = ['-quiet', target, filePath];
     await execFileAsync('vncsnapshot', args);
     const buffer = await readFile(filePath);
     const detected = readPngDimensions(buffer) ?? DEFAULT_VIEWPORT;
@@ -1156,7 +1158,7 @@ export class VMRemoteControlProvider implements RemoteControlProvider {
     const readOnly = params.readOnly ?? false;
     const sessionId = `vmrc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-    if (backend !== 'mock') {
+    if (backend !== 'mock' && backend !== 'spice' && backend !== 'vnc') {
       this.context.logger.warn(`Backend ${backend} is running in mock mode until a driver is implemented.`);
     }
 

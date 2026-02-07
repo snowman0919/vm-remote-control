@@ -763,7 +763,7 @@ class SpiceVirshDriver implements BackendDriver {
           execute: 'guest-file-read',
           arguments: { handle, count: 65536 },
         });
-        const buf = read?.return?.buf_b64;
+        const buf = read?.return?.buf_b64 ?? read?.return?.['buf-b64'];
         const count = read?.return?.count ?? 0;
         if (buf) chunks.push(Buffer.from(buf, 'base64'));
         if (!count || count === 0) break;

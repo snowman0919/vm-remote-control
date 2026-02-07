@@ -40,12 +40,16 @@ async function main() {
 
   const mappedActions = (plan.actions ?? []).flatMap((action) => {
     if (!action || typeof action !== 'object') return [];
-    if (action.type === 'click' && typeof action.x === 'number' && typeof action.y === 'number') {
-      return [
-        { type: 'mouse-move', x: action.x, y: action.y },
-        { type: 'mouse-button', button: 'left', action: 'down', x: action.x, y: action.y },
-        { type: 'mouse-button', button: 'left', action: 'up', x: action.x, y: action.y },
-      ];
+    if (action.type === 'click') {
+      const x = typeof action.x === 'number' ? action.x : action.position?.x;
+      const y = typeof action.y === 'number' ? action.y : action.position?.y;
+      if (typeof x === 'number' && typeof y === 'number') {
+        return [
+          { type: 'mouse-move', x, y },
+          { type: 'mouse-button', button: 'left', action: 'down', x, y },
+          { type: 'mouse-button', button: 'left', action: 'up', x, y },
+        ];
+      }
     }
     if (action.type === 'type' && typeof action.text === 'string') {
       return [{ type: 'text', text: action.text }];

@@ -682,7 +682,9 @@ class SpiceVirshDriver implements BackendDriver {
     viewport: Viewport,
     private readonly absoluteMouse: boolean,
     private readonly inputRetryCount: number,
-    private readonly inputRetryDelayMs: number
+    private readonly inputRetryDelayMs: number,
+    private readonly useGuestScreenshot: boolean,
+    private readonly guestScreenshotPath: string
   ) {
     this.viewport = viewport;
   }
@@ -696,8 +698,74 @@ class SpiceVirshDriver implements BackendDriver {
     await execFileAsync('virsh', ['qemu-monitor-command', this.domain, JSON.stringify(command)]);
   }
 
-  private async runQga(command: Record<string, unknown>): Promise<void> {
-    await execFileAsync('virsh', ['qemu-agent-command', this.domain, JSON.stringify(command)]);
+  private async runQga(command: Record<string, unknown>): Promise<any> {
+    const { stdout } = await execFileAsync('virsh', ['qemu-agent-command', this.domain, JSON.stringify(command)]);
+    try {
+      return JSON.parse(stdout);
+    } catch {
+      return stdout;
+    }
+  }
+
+  private async captureGuestScreenshot(): Promise<Buffer> {
+    const path = this.guestScreenshotPath;
+    const ps = `Add-Type -AssemblyName System.Windows.Forms; ` +
+      `$b = New-Object System.Drawing.Bitmap([System.Windows.Forms.SystemInformation]::VirtualScreen.Width, [System.Windows.Forms.SystemInformation]::VirtualScreen.Height); ` +
+      `$g = [System.Drawing.Graphics]::FromImage($b); ` +
+      `$g.CopyFromScreen([System.Windows.Forms.SystemInformation]::VirtualScreen.X, [System.Windows.Forms.SystemInformation]::VirtualScreen.Y, 0, 0, $b.Size); ` +
+      `$b.Save('${path}', [System.Drawing.Imaging.ImageFormat]::Png);`;
+
+    const execResp = await this.runQga({
+      execute: 'guest-exec',
+      arguments: {
+        path: 'powershell.exe',
+        arg: ['-NoProfile', '-NonInteractive', '-Command', ps],
+        'capture-output': true,
+      },
+    });
+
+    const pid = execResp?.return?.pid;
+    if (!pid) {
+      throw new Error('guest-exec did not return pid');
+    }
+
+    // Wait for completion
+    for (let i = 0; i < 10; i++) {
+      const status = await this.runQga({
+        execute: 'guest-exec-status',
+        arguments: { pid },
+      });
+      if (status?.return?.exited) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+
+    const open = await this.runQga({
+      execute: 'guest-file-open',
+      arguments: { path, mode: 'r' },
+    });
+    const handle = open?.return;
+    if (!handle) throw new Error('guest-file-open failed');
+
+    const chunks: Buffer[] = [];
+    let offset = 0;
+    while (true) {
+      const read = await this.runQga({
+        execute: 'guest-file-read',
+        arguments: { handle, count: 65536, offset },
+      });
+      const buf = read?.return?.buf_b64;
+      const count = read?.return?.count ?? 0;
+      if (buf) chunks.push(Buffer.from(buf, 'base64'));
+      if (!count || count === 0) break;
+      offset += count;
+    }
+
+    await this.runQga({
+      execute: 'guest-file-close',
+      arguments: { handle },
+    });
+
+    return Buffer.concat(chunks);
   }
 
   private async runWithRetry<T>(operation: () => Promise<T>, label: string): Promise<T> {
@@ -744,9 +812,14 @@ class SpiceVirshDriver implements BackendDriver {
   }
 
   async captureFrame(viewport?: Viewport): Promise<Frame> {
-    const filePath = `/tmp/vmrc_${this.domain}.png`;
-    await this.runVirsh(['screenshot', this.domain, '--file', filePath]);
-    const buffer = await readFile(filePath);
+    let buffer: Buffer;
+    if (this.useGuestScreenshot) {
+      buffer = await this.captureGuestScreenshot();
+    } else {
+      const filePath = `/tmp/vmrc_${this.domain}.png`;
+      await this.runVirsh(['screenshot', this.domain, '--file', filePath]);
+      buffer = await readFile(filePath);
+    }
     const detected = readPngDimensions(buffer);
     const targetViewport = detected ?? viewport ?? DEFAULT_VIEWPORT;
     if (detected) {
@@ -1238,13 +1311,17 @@ export class VMRemoteControlProvider implements RemoteControlProvider {
           const absoluteMouse = this.options.spice?.absolute_mouse ?? true;
           const inputRetryCount = this.options.spice?.input_retry_count ?? 2;
           const inputRetryDelayMs = this.options.spice?.input_retry_delay_ms ?? 60;
+          const useGuestScreenshot = this.options.spice?.use_guest_screenshot ?? false;
+          const guestScreenshotPath = this.options.spice?.guest_screenshot_path ?? 'C:\\vmrc\\shot.png';
           return new SpiceVirshDriver(
             domain,
             this.context.logger,
             viewport,
             absoluteMouse,
             inputRetryCount,
-            inputRetryDelayMs
+            inputRetryDelayMs,
+            useGuestScreenshot,
+            guestScreenshotPath
           );
         }
         if (backend === 'vnc') {

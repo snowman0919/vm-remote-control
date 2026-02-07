@@ -70,7 +70,9 @@ pnpm add openclaw-plugin-vm-remote-control
     "vm-remote-control": {
       "default_backend": "spice",
       "spice": {
-        "domain": "Win11"
+        "domain": "Win11",
+        "use_guest_screenshot": true,
+        "guest_screenshot_path": "C:\\vmrc\\shot.png"
       }
     }
   }
@@ -81,6 +83,7 @@ pnpm add openclaw-plugin-vm-remote-control
 - Keyboard input: QMP key down/up with retry; falls back to `virsh send-key` for down events.
 - Mouse input: QMP absolute moves + scroll; mouse clicks move-to-x/y first when provided and retry on failure.
 - Clipboard: tries QEMU guest agent first (`guest-set-clipboard`), falls back to keystroke injection.
+- Screenshots: can use guest agent capture to avoid black screens (see below).
 
 ## Vision Planning (Qwen3-VL via Ollama)
 

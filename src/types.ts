@@ -34,6 +34,8 @@ export interface VMRemoteControlOptions {
     absolute_mouse?: boolean;
     input_retry_count?: number;
     input_retry_delay_ms?: number;
+    use_guest_screenshot?: boolean;
+    guest_screenshot_path?: string;
   };
   webrtc?: {
     signaling_url?: string;

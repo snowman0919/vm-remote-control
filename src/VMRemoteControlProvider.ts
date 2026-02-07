@@ -134,6 +134,22 @@ function parseVisionPlan(text: string): VisionActionPlan {
   };
 }
 
+async function resizeImageIfNeeded(imageBuffer: Buffer, maxWidth: number | undefined): Promise<Buffer> {
+  if (!maxWidth) return imageBuffer;
+  const dims = readPngDimensions(imageBuffer);
+  if (!dims || dims.width <= maxWidth) return imageBuffer;
+  const tmpDir = await mkdtemp(join(tmpdir(), 'vmrc-vision-'));
+  const inPath = join(tmpDir, 'input.png');
+  const outPath = join(tmpDir, 'output.png');
+  try {
+    await writeFile(inPath, imageBuffer);
+    await execFileAsync('magick', [inPath, '-resize', `${maxWidth}`, outPath]);
+    return await readFile(outPath);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+}
+
 async function runVisionPlan(imageBuffer: Buffer, prompt: string, options: VisionPlanOptions, logger: PluginContext['logger']): Promise<VisionActionPlan> {
   const model = options.model ?? DEFAULT_VISION_MODEL;
   const systemPrompt = options.systemPrompt ?? DEFAULT_VISION_SYSTEM_PROMPT;
@@ -141,13 +157,14 @@ async function runVisionPlan(imageBuffer: Buffer, prompt: string, options: Visio
   const timeoutMs = options.timeoutMs ?? DEFAULT_VISION_TIMEOUT_MS;
   const temperature = options.temperature;
   const maxTokens = options.maxTokens;
+  const resized = await resizeImageIfNeeded(imageBuffer, options.maxImageWidth ?? 1024);
 
   const payload: Record<string, unknown> = {
     model,
     stream: false,
     messages: [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: prompt, images: [imageBuffer.toString('base64')] },
+      { role: 'user', content: prompt, images: [resized.toString('base64')] },
     ],
   };
 
@@ -870,6 +887,7 @@ class VMRemoteControlSessionImpl extends EventEmitter implements RemoteControlSe
       temperature: options.temperature ?? this.visionOptions?.temperature,
       maxTokens: options.maxTokens ?? this.visionOptions?.max_tokens,
       timeoutMs: options.timeoutMs ?? this.visionOptions?.timeout_ms,
+      maxImageWidth: options.maxImageWidth ?? this.visionOptions?.max_image_width,
     };
     const instruction = prompt || options.prompt || 'Suggest the next UI action.';
     return runVisionPlan(frame.buffer, instruction, merged, this.logger);

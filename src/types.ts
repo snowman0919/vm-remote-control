@@ -13,6 +13,7 @@ export interface VMRemoteControlOptions {
     temperature?: number;
     max_tokens?: number;
     timeout_ms?: number;
+    max_image_width?: number;
   };
   vnc?: {
     host?: string;
@@ -155,6 +156,7 @@ export interface VisionPlanOptions {
   temperature?: number;
   maxTokens?: number;
   timeoutMs?: number;
+  maxImageWidth?: number;
 }
 
 export type KeyAction = 'down' | 'up';

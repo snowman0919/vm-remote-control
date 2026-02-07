@@ -22,6 +22,9 @@ async function main() {
       timeout_ms: process.env.VMRC_VISION_TIMEOUT_MS
         ? Number(process.env.VMRC_VISION_TIMEOUT_MS)
         : undefined,
+      max_image_width: process.env.VMRC_VISION_MAX_WIDTH
+        ? Number(process.env.VMRC_VISION_MAX_WIDTH)
+        : undefined,
     },
   });
 

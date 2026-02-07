@@ -56,8 +56,8 @@ pnpm add openclaw-plugin-vm-remote-control
 
 **Notes/limits**
 - Keyboard input: basic keys/text via `virsh send-key` (best-effort).
-- Mouse input: QMP absolute moves (best-effort); scroll not supported yet.
-- Clipboard: best-effort (falls back to keystroke injection).
+- Mouse input: QMP absolute moves + scroll (best-effort).
+- Clipboard: tries QEMU guest agent first (`guest-set-clipboard`), falls back to keystroke injection.
 
 ## Usage
 ```ts
@@ -119,6 +119,11 @@ await session.close();
 ## Development Notes
 - The mock backend uses a 1x1 PNG buffer and emits frames at `frame_interval_ms`.
 - Replace `MockBackendDriver` with real protocol drivers when integrating.
+- Basic SPICE end-to-end test:
+  ```bash
+  pnpm build
+  VMRC_SPICE_DOMAIN=Win11 pnpm spice:e2e
+  ```
 
 ---
 

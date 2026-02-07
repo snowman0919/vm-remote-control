@@ -145,6 +145,10 @@ class SpiceVirshDriver implements BackendDriver {
     await execFileAsync('virsh', ['qemu-monitor-command', this.domain, JSON.stringify(command)]);
   }
 
+  private async runQga(command: Record<string, unknown>): Promise<void> {
+    await execFileAsync('virsh', ['qemu-agent-command', this.domain, JSON.stringify(command)]);
+  }
+
   async connect(): Promise<void> {
     await this.runVirsh(['domstate', this.domain]);
     const display = await this.runVirsh(['domdisplay', this.domain]);
@@ -274,9 +278,20 @@ class SpiceVirshDriver implements BackendDriver {
   }
 
   async setClipboard(text: string): Promise<void> {
-    this.logger.warn('Clipboard set not supported via virsh yet; sending as keystrokes instead', {
-      length: text.length,
-    });
+    try {
+      await this.runQga({
+        execute: 'guest-set-clipboard',
+        arguments: { text },
+      });
+      this.logger.debug('Clipboard set via guest agent', { length: text.length });
+      return;
+    } catch (error) {
+      this.logger.warn('Clipboard set via guest agent failed; falling back to keystrokes', {
+        length: text.length,
+        error,
+      });
+    }
+
     for (const char of text) {
       const key = keyToVirsh(char);
       if (key) {

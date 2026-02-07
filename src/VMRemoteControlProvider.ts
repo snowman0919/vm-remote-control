@@ -747,17 +747,15 @@ class SpiceVirshDriver implements BackendDriver {
     if (!handle) throw new Error('guest-file-open failed');
 
     const chunks: Buffer[] = [];
-    let offset = 0;
     while (true) {
       const read = await this.runQga({
         execute: 'guest-file-read',
-        arguments: { handle, count: 65536, offset },
+        arguments: { handle, count: 65536 },
       });
       const buf = read?.return?.buf_b64;
       const count = read?.return?.count ?? 0;
       if (buf) chunks.push(Buffer.from(buf, 'base64'));
       if (!count || count === 0) break;
-      offset += count;
     }
 
     await this.runQga({

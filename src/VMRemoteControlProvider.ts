@@ -121,6 +121,29 @@ function parseVisionPlan(text: string): VisionActionPlan {
   try {
     parsed = JSON.parse(json);
   } catch (error) {
+    const fallbackActions: InputEvent[] = [];
+    const actionRegex = /\{[^}]*?"?type"?\s*:\s*"?(click|type|key)"?[^}]*?\}/gi;
+    const matches = text.match(actionRegex) ?? [];
+    for (const match of matches) {
+      if (/"?type"?\s*:\s*"?click"?/i.test(match)) {
+        const x = Number(match.match(/"?x"?\s*:\s*(\d+)/i)?.[1]);
+        const y = Number(match.match(/"?y"?\s*:\s*(\d+)/i)?.[1]);
+        if (!isNaN(x) && !isNaN(y)) {
+          fallbackActions.push({ type: 'mouse-move', x, y });
+          fallbackActions.push({ type: 'mouse-button', button: 'left', action: 'down', x, y });
+          fallbackActions.push({ type: 'mouse-button', button: 'left', action: 'up', x, y });
+        }
+      } else if (/"?type"?\s*:\s*"?type"?/i.test(match)) {
+        const textMatch = match.match(/"?text"?\s*:\s*"([^"]+)"/i);
+        if (textMatch?.[1]) fallbackActions.push({ type: 'text', text: textMatch[1] });
+      } else if (/"?type"?\s*:\s*"?key"?/i.test(match)) {
+        const keyMatch = match.match(/"?key"?\s*:\s*"([^"]+)"/i);
+        if (keyMatch?.[1]) fallbackActions.push({ type: 'key', key: keyMatch[1], action: 'down' });
+      }
+    }
+    if (fallbackActions.length) {
+      return { summary: 'Fallback parsed actions from non-JSON response', actions: fallbackActions, raw: text };
+    }
     throw new Error(`Failed to parse vision plan JSON: ${error}`);
   }
   const rawActions = Array.isArray(parsed?.actions) ? (parsed.actions as unknown[]) : [];

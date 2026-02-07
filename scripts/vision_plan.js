@@ -38,7 +38,17 @@ async function main() {
   const plan = await session.visionPlan(prompt);
   console.log('Vision plan:', JSON.stringify(plan, null, 2));
 
-  const mappedActions = (plan.actions ?? []).flatMap((action) => {
+  const rawActions = (() => {
+    if (plan.actions && plan.actions.length) return plan.actions;
+    try {
+      const parsed = JSON.parse(plan.raw ?? '{}');
+      return Array.isArray(parsed?.actions) ? parsed.actions : [];
+    } catch {
+      return [];
+    }
+  })();
+
+  const mappedActions = rawActions.flatMap((action) => {
     if (!action || typeof action !== 'object') return [];
     if (action.type === 'click') {
       const x = typeof action.x === 'number' ? action.x : action.position?.x;

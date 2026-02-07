@@ -739,27 +739,16 @@ class SpiceVirshDriver implements BackendDriver {
     }
 
     // Wait for completion
-    let outData: string | undefined;
     for (let i = 0; i < 20; i++) {
       const status = await this.runQga({
         execute: 'guest-exec-status',
         arguments: { pid },
       });
-      if (status?.return?.out_data) {
-        outData = status.return.out_data;
-      }
       if (status?.return?.exited) break;
       await new Promise((r) => setTimeout(r, 200));
     }
 
-    if (outData) {
-      const stdout = Buffer.from(outData, 'base64').toString('utf8').trim();
-      if (stdout) {
-        return Buffer.from(stdout, 'base64');
-      }
-    }
-
-    // Fallback: read file via guest-file-read
+    // Read file via guest-file-read (more reliable than stdout for large payloads)
     const readFileOnce = async (): Promise<Buffer> => {
       const open = await this.runQga({
         execute: 'guest-file-open',
@@ -788,11 +777,13 @@ class SpiceVirshDriver implements BackendDriver {
       return Buffer.concat(chunks);
     };
 
-    for (let attempt = 0; attempt < 3; attempt++) {
+    const hasPngEnd = (buffer: Buffer): boolean => buffer.includes(Buffer.from('IEND'));
+
+    for (let attempt = 0; attempt < 5; attempt++) {
       const buffer = await readFileOnce();
       const signatureOk = buffer.slice(0, 8).toString('hex') === '89504e470d0a1a0a';
-      if (signatureOk && buffer.length > 1024) return buffer;
-      await new Promise((r) => setTimeout(r, 300));
+      if (signatureOk && buffer.length > 1024 && hasPngEnd(buffer)) return buffer;
+      await new Promise((r) => setTimeout(r, 500));
     }
 
     return await readFileOnce();

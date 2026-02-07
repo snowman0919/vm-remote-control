@@ -1312,7 +1312,7 @@ export class VMRemoteControlProvider implements RemoteControlProvider {
           const inputRetryCount = this.options.spice?.input_retry_count ?? 2;
           const inputRetryDelayMs = this.options.spice?.input_retry_delay_ms ?? 60;
           const useGuestScreenshot = this.options.spice?.use_guest_screenshot ?? false;
-          const guestScreenshotPath = this.options.spice?.guest_screenshot_path ?? 'C:\\vmrc\\shot.png';
+          const guestScreenshotPath = this.options.spice?.guest_screenshot_path ?? 'C:\\Windows\\Temp\\vmrc_shot.png';
           return new SpiceVirshDriver(
             domain,
             this.context.logger,

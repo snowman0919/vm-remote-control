@@ -22,6 +22,7 @@ export interface VMRemoteControlOptions {
     port?: number;
     password?: string;
     domain?: string;
+    absolute_mouse?: boolean;
   };
   webrtc?: {
     signaling_url?: string;

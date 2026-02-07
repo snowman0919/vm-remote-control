@@ -56,8 +56,8 @@ pnpm add openclaw-plugin-vm-remote-control
 
 **Notes/limits**
 - Keyboard input: basic keys/text via `virsh send-key` (best-effort).
-- Mouse input: relative moves based on absolute coordinates (best-effort); scroll not supported yet.
-- Clipboard: not implemented yet (guest agent integration needed).
+- Mouse input: QMP absolute moves (best-effort); scroll not supported yet.
+- Clipboard: best-effort (falls back to keystroke injection).
 
 ## Usage
 ```ts

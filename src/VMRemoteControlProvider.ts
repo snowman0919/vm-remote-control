@@ -125,15 +125,24 @@ class SpiceVirshDriver implements BackendDriver {
   private mouseX = 0;
   private mouseY = 0;
   private mouseMask = 0;
+  private viewport: Viewport;
 
   constructor(
     private readonly domain: string,
-    private readonly logger: PluginContext['logger']
-  ) {}
+    private readonly logger: PluginContext['logger'],
+    viewport: Viewport,
+    private readonly absoluteMouse: boolean
+  ) {
+    this.viewport = viewport;
+  }
 
   private async runVirsh(args: string[]): Promise<string> {
     const { stdout } = await execFileAsync('virsh', args);
     return stdout.trim();
+  }
+
+  private async runQmp(command: Record<string, unknown>): Promise<void> {
+    await execFileAsync('virsh', ['qemu-monitor-command', this.domain, JSON.stringify(command)]);
   }
 
   async connect(): Promise<void> {
@@ -185,6 +194,23 @@ class SpiceVirshDriver implements BackendDriver {
         return;
       }
       case 'mouse-move': {
+        if (this.absoluteMouse) {
+          this.mouseX = event.x;
+          this.mouseY = event.y;
+          const max = 65535;
+          const absX = Math.max(0, Math.min(max, Math.round((event.x / this.viewport.width) * max)));
+          const absY = Math.max(0, Math.min(max, Math.round((event.y / this.viewport.height) * max)));
+          await this.runQmp({
+            execute: 'input_send_event',
+            arguments: {
+              events: [
+                { type: 'abs', data: { axis: 'x', value: absX } },
+                { type: 'abs', data: { axis: 'y', value: absY } }
+              ]
+            }
+          });
+          return;
+        }
         const dx = Math.round(event.x - this.mouseX);
         const dy = Math.round(event.y - this.mouseY);
         this.mouseX = event.x;
@@ -193,6 +219,23 @@ class SpiceVirshDriver implements BackendDriver {
         return;
       }
       case 'mouse-button': {
+        if (this.absoluteMouse) {
+          await this.runQmp({
+            execute: 'input_send_event',
+            arguments: {
+              events: [
+                {
+                  type: 'btn',
+                  data: {
+                    button: event.button === 'left' ? 'left' : event.button === 'right' ? 'right' : 'middle',
+                    down: event.action === 'down',
+                  }
+                }
+              ]
+            }
+          });
+          return;
+        }
         const bit = event.button === 'left' ? 1 : event.button === 'right' ? 2 : 4;
         if (event.action === 'down') {
           this.mouseMask |= bit;
@@ -216,11 +259,19 @@ class SpiceVirshDriver implements BackendDriver {
   }
 
   async setClipboard(text: string): Promise<void> {
-    this.logger.warn('Clipboard set not supported via virsh yet', { length: text.length });
+    this.logger.warn('Clipboard set not supported via virsh yet; sending as keystrokes instead', {
+      length: text.length,
+    });
+    for (const char of text) {
+      const key = keyToVirsh(char);
+      if (key) {
+        await this.runVirsh(['send-key', this.domain, key]);
+      }
+    }
   }
 
-  async setViewport(): Promise<void> {
-    // SPICE viewport handled by guest agent; no-op for now.
+  async setViewport(viewport: Viewport): Promise<void> {
+    this.viewport = viewport;
   }
 
   async healthCheck(): Promise<boolean> {
@@ -507,7 +558,8 @@ export class VMRemoteControlProvider implements RemoteControlProvider {
           if (!domain) {
             throw new Error('SPICE backend requires a domain name (label or spice.domain)');
           }
-          return new SpiceVirshDriver(domain, this.context.logger);
+          const absoluteMouse = this.options.spice?.absolute_mouse ?? true;
+          return new SpiceVirshDriver(domain, this.context.logger, viewport, absoluteMouse);
         }
         return new MockBackendDriver(
           backend,

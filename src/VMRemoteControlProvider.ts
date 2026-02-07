@@ -246,7 +246,22 @@ class SpiceVirshDriver implements BackendDriver {
         return;
       }
       case 'mouse-scroll': {
-        this.logger.warn('Mouse scroll not implemented for SPICE driver');
+        const deltaX = Math.round(event.deltaX ?? 0);
+        const deltaY = Math.round(event.deltaY ?? 0);
+        const events: Array<Record<string, unknown>> = [];
+        if (deltaY !== 0) {
+          events.push({ type: 'rel', data: { axis: 'wheel', value: deltaY } });
+        }
+        if (deltaX !== 0) {
+          events.push({ type: 'rel', data: { axis: 'hwheel', value: deltaX } });
+        }
+        if (!events.length) return;
+        await this.runQmp({
+          execute: 'input_send_event',
+          arguments: {
+            events,
+          },
+        });
         return;
       }
       case 'clipboard': {

@@ -1,7 +1,9 @@
 import { EventEmitter } from 'events';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { readFile } from 'fs/promises';
+import { readFile, writeFile, mkdtemp, rm } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import type {
   Frame,
   InputEvent,
@@ -12,6 +14,12 @@ import type {
   VMBackend,
   VMRemoteControlOptions,
   Viewport,
+  OCRResult,
+  OCRSnapshotOptions,
+  OCRWord,
+  OCRLine,
+  OCRMatch,
+  FindTextOptions,
 } from './types.js';
 
 const DEFAULT_FRAME_INTERVAL_MS = 1000;
@@ -22,6 +30,187 @@ const DEFAULT_PNG_BUFFER = Buffer.from(
 );
 
 const execFileAsync = promisify(execFile);
+
+function readPngDimensions(buffer: Buffer): { width: number; height: number } | null {
+  if (buffer.length < 24) return null;
+  const signature = buffer.slice(0, 8).toString('hex');
+  if (signature !== '89504e470d0a1a0a') return null;
+  const width = buffer.readUInt32BE(16);
+  const height = buffer.readUInt32BE(20);
+  return { width, height };
+}
+
+function normalizeText(value: string, matchCase: boolean): string {
+  return matchCase ? value : value.toLowerCase();
+}
+
+async function runTesseract(
+  imageBuffer: Buffer,
+  { language = 'eng', psm = 6, oem, extraArgs = [] }: OCRSnapshotOptions = {}
+): Promise<OCRResult> {
+  const tmpDir = await mkdtemp(join(tmpdir(), 'vmrc-ocr-'));
+  const imagePath = join(tmpDir, 'frame.png');
+  try {
+    await writeFile(imagePath, imageBuffer);
+    const args = [
+      imagePath,
+      'stdout',
+      '-l',
+      language,
+      '--psm',
+      String(psm),
+    ];
+    if (typeof oem === 'number') {
+      args.push('--oem', String(oem));
+    }
+    args.push('tsv');
+    args.push(...extraArgs);
+
+    const { stdout } = await execFileAsync('tesseract', args, { maxBuffer: 10 * 1024 * 1024 });
+    const lines = stdout.trim().split(/\r?\n/);
+    const header = lines.shift();
+    if (!header || !header.startsWith('level')) {
+      throw new Error('Unexpected tesseract TSV output');
+    }
+
+    const words: OCRWord[] = [];
+    const lineMap = new Map<string, OCRLine>();
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const parts = line.split('\t');
+      if (parts.length < 12) continue;
+      const level = Number(parts[0]);
+      const block = Number(parts[2]);
+      const paragraph = Number(parts[3]);
+      const lineNum = Number(parts[4]);
+      const wordNum = Number(parts[5]);
+      const left = Number(parts[6]);
+      const top = Number(parts[7]);
+      const width = Number(parts[8]);
+      const height = Number(parts[9]);
+      const confidence = Number(parts[10]);
+      const text = parts.slice(11).join('\t');
+
+      if (!text) continue;
+
+      if (level === 5) {
+        words.push({
+          text,
+          bbox: { x: left, y: top, width, height },
+          confidence: isNaN(confidence) ? undefined : confidence,
+          block,
+          paragraph,
+          line: lineNum,
+          word: wordNum,
+        });
+      }
+
+      if (level === 4 || level === 5) {
+        const key = `${block}-${paragraph}-${lineNum}`;
+        const existing = lineMap.get(key);
+        if (!existing) {
+          lineMap.set(key, {
+            text,
+            bbox: { x: left, y: top, width, height },
+            confidence: isNaN(confidence) ? undefined : confidence,
+            block,
+            paragraph,
+            line: lineNum,
+          });
+        } else if (level === 5) {
+          existing.text = `${existing.text} ${text}`.trim();
+          const right = Math.max(existing.bbox.x + existing.bbox.width, left + width);
+          const bottom = Math.max(existing.bbox.y + existing.bbox.height, top + height);
+          existing.bbox.x = Math.min(existing.bbox.x, left);
+          existing.bbox.y = Math.min(existing.bbox.y, top);
+          existing.bbox.width = right - existing.bbox.x;
+          existing.bbox.height = bottom - existing.bbox.y;
+          if (existing.confidence !== undefined && !isNaN(confidence)) {
+            existing.confidence = (existing.confidence + confidence) / 2;
+          }
+        }
+      }
+    }
+
+    const ocrLines = Array.from(lineMap.values()).sort((a, b) => {
+      if (a.block === b.block) {
+        if (a.paragraph === b.paragraph) return (a.line ?? 0) - (b.line ?? 0);
+        return (a.paragraph ?? 0) - (b.paragraph ?? 0);
+      }
+      return (a.block ?? 0) - (b.block ?? 0);
+    });
+
+    const text = ocrLines.map((line) => line.text).join('\n');
+    const dimensions = readPngDimensions(imageBuffer) ?? { width: 0, height: 0 };
+
+    return {
+      text,
+      lines: ocrLines,
+      words,
+      width: dimensions.width,
+      height: dimensions.height,
+      timestamp: Date.now(),
+    };
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+}
+
+function findTextMatches(
+  ocr: OCRResult,
+  query: string | RegExp,
+  options: FindTextOptions = {}
+): OCRMatch[] {
+  const { matchCase = false, scope = 'line' } = options;
+  const matches: OCRMatch[] = [];
+  const needle = typeof query === 'string' ? normalizeText(query, matchCase) : query;
+
+  const checkText = (text: string): boolean => {
+    if (typeof needle === 'string') {
+      return normalizeText(text, matchCase).includes(needle);
+    }
+    return needle.test(text);
+  };
+
+  const includeLine = scope === 'line' || scope === 'all';
+  const includeWord = scope === 'word' || scope === 'all';
+
+  if (includeLine) {
+    for (const line of ocr.lines) {
+      if (checkText(line.text)) {
+        matches.push({
+          text: line.text,
+          bbox: line.bbox,
+          confidence: line.confidence,
+          level: 'line',
+          block: line.block,
+          paragraph: line.paragraph,
+          line: line.line,
+        });
+      }
+    }
+  }
+
+  if (includeWord) {
+    for (const word of ocr.words) {
+      if (checkText(word.text)) {
+        matches.push({
+          text: word.text,
+          bbox: word.bbox,
+          confidence: word.confidence,
+          level: 'word',
+          block: word.block,
+          paragraph: word.paragraph,
+          line: word.line,
+          word: word.word,
+        });
+      }
+    }
+  }
+
+  return matches;
+}
 
 interface BackendDriver {
   connect(): Promise<void>;
@@ -163,7 +352,11 @@ class SpiceVirshDriver implements BackendDriver {
     const filePath = `/tmp/vmrc_${this.domain}.png`;
     await this.runVirsh(['screenshot', this.domain, '--file', filePath]);
     const buffer = await readFile(filePath);
-    const targetViewport = viewport ?? DEFAULT_VIEWPORT;
+    const detected = readPngDimensions(buffer);
+    const targetViewport = detected ?? viewport ?? DEFAULT_VIEWPORT;
+    if (detected) {
+      this.viewport = detected;
+    }
     return {
       buffer,
       mimeType: 'image/png',
@@ -400,7 +593,26 @@ class VMRemoteControlSessionImpl extends EventEmitter implements RemoteControlSe
   }
 
   async snapshot(): Promise<Frame> {
-    return this.driver.captureFrame(this.viewport);
+    const frame = await this.driver.captureFrame(this.viewport);
+    if (frame.width !== this.viewport.width || frame.height !== this.viewport.height) {
+      this.viewport = { width: frame.width, height: frame.height };
+    }
+    return frame;
+  }
+
+  async ocrSnapshot(options?: OCRSnapshotOptions): Promise<OCRResult> {
+    const frame = await this.snapshot();
+    const ocr = await runTesseract(frame.buffer, options);
+    return {
+      ...ocr,
+      width: frame.width,
+      height: frame.height,
+    };
+  }
+
+  async findText(query: string | RegExp, options?: FindTextOptions): Promise<OCRMatch[]> {
+    const ocr = await this.ocrSnapshot();
+    return findTextMatches(ocr, query, options);
   }
 
   async sendInput(event: InputEvent): Promise<void> {

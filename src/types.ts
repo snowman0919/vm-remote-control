@@ -80,6 +80,57 @@ export interface Frame {
   timestamp: number;
 }
 
+export interface OCRWord {
+  text: string;
+  bbox: { x: number; y: number; width: number; height: number };
+  confidence?: number;
+  block?: number;
+  paragraph?: number;
+  line?: number;
+  word?: number;
+}
+
+export interface OCRLine {
+  text: string;
+  bbox: { x: number; y: number; width: number; height: number };
+  confidence?: number;
+  block?: number;
+  paragraph?: number;
+  line?: number;
+}
+
+export interface OCRResult {
+  text: string;
+  lines: OCRLine[];
+  words: OCRWord[];
+  width: number;
+  height: number;
+  timestamp: number;
+}
+
+export interface OCRSnapshotOptions {
+  language?: string;
+  psm?: number;
+  oem?: number;
+  extraArgs?: string[];
+}
+
+export interface FindTextOptions {
+  matchCase?: boolean;
+  scope?: 'line' | 'word' | 'all';
+}
+
+export interface OCRMatch {
+  text: string;
+  bbox: { x: number; y: number; width: number; height: number };
+  confidence?: number;
+  level: 'line' | 'word';
+  block?: number;
+  paragraph?: number;
+  line?: number;
+  word?: number;
+}
+
 export type KeyAction = 'down' | 'up';
 
 export type InputEvent =
@@ -97,6 +148,8 @@ export interface RemoteControlSession extends EventEmitter {
   label?: string;
   viewport?: Viewport;
   snapshot(): Promise<Frame>;
+  ocrSnapshot(options?: OCRSnapshotOptions): Promise<OCRResult>;
+  findText(query: string | RegExp, options?: FindTextOptions): Promise<OCRMatch[]>;
   sendInput(event: InputEvent): Promise<void>;
   setViewport(viewport: Viewport): Promise<void>;
   setClipboard(text: string): Promise<void>;

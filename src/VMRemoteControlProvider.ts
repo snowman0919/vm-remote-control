@@ -171,8 +171,14 @@ async function runVisionPlan(imageBuffer: Buffer, prompt: string, options: Visio
       const body = await response.text().catch(() => '');
       throw new Error(`Ollama vision request failed (${response.status}): ${body}`);
     }
-    const data = (await response.json()) as { message?: { content?: string } };
-    const content = data?.message?.content ?? '';
+    const rawText = await response.text();
+    let data: any = undefined;
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      data = undefined;
+    }
+    const content = data?.message?.content ?? data?.response ?? rawText ?? '';
     if (!content) {
       throw new Error('Ollama vision response missing content');
     }

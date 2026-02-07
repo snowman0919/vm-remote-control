@@ -7,6 +7,7 @@ This plugin provides a **remote-control provider** for virtual machines, enablin
 - **Mock backend** (default) that streams placeholder frames and accepts input
 - **Pluggable backend driver** interface (VNC/RDP/WebRTC placeholders)
 - **Session utilities**: snapshots, clipboard, viewport, health checks
+- **OCR + UI state helpers** (tesseract-backed text extraction + search)
 
 > SPICE is now backed by `virsh` (screenshots + basic input). VNC/RDP/WebRTC remain mocked.
 
@@ -59,6 +60,14 @@ pnpm add openclaw-plugin-vm-remote-control
 - Mouse input: QMP absolute moves + scroll (best-effort).
 - Clipboard: tries QEMU guest agent first (`guest-set-clipboard`), falls back to keystroke injection.
 
+## OCR / UI State Helpers
+The OCR helpers shell out to the `tesseract` CLI. Install it first:
+```bash
+sudo apt-get install -y tesseract-ocr
+```
+
+You can read text from the current frame and search for matches using simple text queries or regex.
+
 ## Usage
 ```ts
 import VMRemoteControlProvider from 'openclaw-plugin-vm-remote-control';
@@ -85,6 +94,13 @@ await session.setClipboard('Hello VM');
 const snapshot = await session.snapshot();
 console.log('Snapshot mime', snapshot.mimeType);
 
+// OCR (requires `tesseract` CLI)
+const ocr = await session.ocrSnapshot({ language: 'eng', psm: 6 });
+console.log('OCR text', ocr.text);
+
+const matches = await session.findText(/welcome/i, { scope: 'line' });
+console.log('Found', matches.length, 'matches');
+
 await session.close();
 ```
 
@@ -99,6 +115,10 @@ await session.close();
 ### Session Events
 - `frame` → emitted with `Frame` whenever a frame is captured
 - `status` → `connecting | connected | disconnected | error`
+
+### OCR Helpers
+- `ocrSnapshot(options?: OCRSnapshotOptions): Promise<OCRResult>`
+- `findText(query: string | RegExp, options?: FindTextOptions): Promise<OCRMatch[]>`
 
 ### Input Events
 ```ts

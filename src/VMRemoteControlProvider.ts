@@ -739,31 +739,45 @@ class SpiceVirshDriver implements BackendDriver {
       await new Promise((r) => setTimeout(r, 200));
     }
 
-    const open = await this.runQga({
-      execute: 'guest-file-open',
-      arguments: { path, mode: 'r' },
-    });
-    const handle = open?.return;
-    if (!handle) throw new Error('guest-file-open failed');
+    // Give the file system a moment to flush
+    await new Promise((r) => setTimeout(r, 500));
 
-    const chunks: Buffer[] = [];
-    while (true) {
-      const read = await this.runQga({
-        execute: 'guest-file-read',
-        arguments: { handle, count: 65536 },
+    const readFileOnce = async (): Promise<Buffer> => {
+      const open = await this.runQga({
+        execute: 'guest-file-open',
+        arguments: { path, mode: 'r' },
       });
-      const buf = read?.return?.buf_b64;
-      const count = read?.return?.count ?? 0;
-      if (buf) chunks.push(Buffer.from(buf, 'base64'));
-      if (!count || count === 0) break;
+      const handle = open?.return;
+      if (!handle) throw new Error('guest-file-open failed');
+
+      const chunks: Buffer[] = [];
+      while (true) {
+        const read = await this.runQga({
+          execute: 'guest-file-read',
+          arguments: { handle, count: 65536 },
+        });
+        const buf = read?.return?.buf_b64;
+        const count = read?.return?.count ?? 0;
+        if (buf) chunks.push(Buffer.from(buf, 'base64'));
+        if (!count || count === 0) break;
+      }
+
+      await this.runQga({
+        execute: 'guest-file-close',
+        arguments: { handle },
+      });
+
+      return Buffer.concat(chunks);
+    };
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const buffer = await readFileOnce();
+      const signatureOk = buffer.slice(0, 8).toString('hex') === '89504e470d0a1a0a';
+      if (signatureOk && buffer.length > 1024) return buffer;
+      await new Promise((r) => setTimeout(r, 300));
     }
 
-    await this.runQga({
-      execute: 'guest-file-close',
-      arguments: { handle },
-    });
-
-    return Buffer.concat(chunks);
+    return await readFileOnce();
   }
 
   private async runWithRetry<T>(operation: () => Promise<T>, label: string): Promise<T> {

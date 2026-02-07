@@ -494,6 +494,104 @@ class MockBackendDriver implements BackendDriver {
   }
 }
 
+class VncDriver implements BackendDriver {
+  constructor(
+    private readonly host: string,
+    private readonly port: number,
+    private readonly password: string | undefined,
+    private readonly logger: PluginContext['logger']
+  ) {}
+
+  private async runVncdo(args: string[]): Promise<void> {
+    const baseArgs = ['-s', `${this.host}::${this.port}`];
+    if (this.password) {
+      baseArgs.push('-p', this.password);
+    }
+    await execFileAsync('/home/monad/.local/bin/vncdo', [...baseArgs, ...args]);
+  }
+
+  async connect(): Promise<void> {
+    this.logger.info('VNC session connected', { host: this.host, port: this.port });
+  }
+
+  async disconnect(): Promise<void> {
+    this.logger.info('VNC session disconnected', { host: this.host, port: this.port });
+  }
+
+  async captureFrame(): Promise<Frame> {
+    const filePath = `/tmp/vmrc_vnc_${this.host.replace(/\W/g, '_')}_${this.port}.png`;
+    const args = ['-quiet', '-host', this.host, '-port', String(this.port), filePath];
+    await execFileAsync('vncsnapshot', args);
+    const buffer = await readFile(filePath);
+    const detected = readPngDimensions(buffer) ?? DEFAULT_VIEWPORT;
+    return {
+      buffer,
+      mimeType: 'image/png',
+      width: detected.width,
+      height: detected.height,
+      timestamp: Date.now(),
+    };
+  }
+
+  async sendInput(event: InputEvent): Promise<void> {
+    switch (event.type) {
+      case 'key': {
+        if (event.action !== 'down') return;
+        const modifiers = (event.modifiers ?? []).map((m) => m.toLowerCase());
+        const key = event.key.toLowerCase();
+        const combo = modifiers.length ? `${modifiers.join('+')}+${key}` : key;
+        await this.runVncdo(['key', combo]);
+        return;
+      }
+      case 'text': {
+        await this.runVncdo(['type', event.text]);
+        return;
+      }
+      case 'mouse-move': {
+        await this.runVncdo(['mousemove', String(Math.round(event.x)), String(Math.round(event.y))]);
+        return;
+      }
+      case 'mouse-button': {
+        const button = event.button === 'left' ? '1' : event.button === 'right' ? '3' : '2';
+        if (event.action === 'down') {
+          await this.runVncdo(['mousedown', button]);
+        } else {
+          await this.runVncdo(['mouseup', button]);
+        }
+        return;
+      }
+      case 'mouse-scroll': {
+        const deltaY = event.deltaY ?? 0;
+        if (deltaY > 0) {
+          await this.runVncdo(['click', '5']);
+        } else if (deltaY < 0) {
+          await this.runVncdo(['click', '4']);
+        }
+        return;
+      }
+      case 'clipboard': {
+        await this.setClipboard(event.text);
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  async setClipboard(text: string): Promise<void> {
+    this.logger.warn('VNC clipboard not supported; typing text instead');
+    await this.runVncdo(['type', text]);
+  }
+
+  async setViewport(): Promise<void> {
+    // VNC viewport handled by server; no-op.
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return true;
+  }
+}
+
 const KEY_ALIASES: Record<string, string> = {
   enter: 'KEY_ENTER',
   return: 'KEY_ENTER',
@@ -1146,6 +1244,11 @@ export class VMRemoteControlProvider implements RemoteControlProvider {
             inputRetryCount,
             inputRetryDelayMs
           );
+        }
+        if (backend === 'vnc') {
+          const host = this.options.vnc?.host ?? '127.0.0.1';
+          const port = this.options.vnc?.port ?? 5901;
+          return new VncDriver(host, port, this.options.vnc?.password, this.context.logger);
         }
         return new MockBackendDriver(
           backend,

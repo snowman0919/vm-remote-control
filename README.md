@@ -5,7 +5,7 @@ This plugin provides a **remote-control provider** for virtual machines, enablin
 ## What’s Included (MVP)
 - **Provider API** with session lifecycle and events
 - **Mock backend** (default) that streams placeholder frames and accepts input
-- **Pluggable backend driver** interface (VNC/RDP/WebRTC placeholders)
+- **Pluggable backend driver** interface (VNC implemented, RDP/WebRTC placeholders)
 - **Session utilities**: snapshots, clipboard, viewport, health checks
 - **OCR + UI state helpers** (tesseract-backed text extraction + search)
 
@@ -39,6 +39,28 @@ pnpm add openclaw-plugin-vm-remote-control
   }
 }
 ```
+
+### VNC (vncsnapshot + vncdo)
+
+```json
+{
+  "plugins": {
+    "vm-remote-control": {
+      "default_backend": "vnc",
+      "vnc": {
+        "host": "127.0.0.1",
+        "port": 5901
+      }
+    }
+  }
+}
+```
+
+**Dependencies**
+- `vncsnapshot`
+- `vncdo` (from `vncdotool`)
+
+---
 
 ### SPICE (virsh-backed)
 
@@ -176,7 +198,7 @@ await session.close();
 ```
 
 ## Backend Roadmap
-- **VNC**: connect/auth + frame capture + input injection
+- **VNC**: basic connect + capture + input ✅
 - **RDP**: Windows-friendly sessions
 - **SPICE**: virsh-backed (basic) ✅
 - **WebRTC**: low-latency streaming

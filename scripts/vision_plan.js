@@ -19,6 +19,9 @@ async function main() {
     vision: {
       model: process.env.VMRC_VISION_MODEL || 'qwen3-vl:8b',
       base_url: process.env.VMRC_VISION_BASE_URL,
+      timeout_ms: process.env.VMRC_VISION_TIMEOUT_MS
+        ? Number(process.env.VMRC_VISION_TIMEOUT_MS)
+        : undefined,
     },
   });
 

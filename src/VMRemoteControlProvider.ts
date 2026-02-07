@@ -199,9 +199,38 @@ async function runVisionPlan(imageBuffer: Buffer, prompt: string, options: Visio
     } catch {
       data = undefined;
     }
-    const content = data?.message?.content ?? data?.response ?? rawText ?? '';
+    let content = data?.message?.content ?? data?.response ?? rawText ?? '';
+
     if (!content) {
-      throw new Error('Ollama vision response missing content');
+      // Fallback to /api/generate for models that don't emit chat-style content
+      const genPayload: Record<string, unknown> = {
+        model,
+        stream: false,
+        prompt: `${systemPrompt}\n${prompt}`,
+        images: [resized.toString('base64')],
+      };
+      if (temperature !== undefined || maxTokens !== undefined) {
+        genPayload.options = {};
+        if (temperature !== undefined) (genPayload.options as Record<string, unknown>).temperature = temperature;
+        if (maxTokens !== undefined) (genPayload.options as Record<string, unknown>).num_predict = maxTokens;
+      }
+      const genResp = await fetch(`${baseUrl.replace(/\/$/, '')}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(genPayload),
+        signal: controller.signal,
+      });
+      const genText = await genResp.text();
+      try {
+        const genJson = JSON.parse(genText);
+        content = genJson?.response ?? genText ?? '';
+      } catch {
+        content = genText ?? '';
+      }
+    }
+
+    if (!content) {
+      throw new Error(`Ollama vision response missing content (raw length: ${rawText?.length ?? 0})`);
     }
     return parseVisionPlan(content);
   } catch (error) {

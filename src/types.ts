@@ -6,6 +6,14 @@ export interface VMRemoteControlOptions {
   default_backend?: VMBackend;
   frame_interval_ms?: number;
   connect_timeout_ms?: number;
+  vision?: {
+    model?: string;
+    base_url?: string;
+    system_prompt?: string;
+    temperature?: number;
+    max_tokens?: number;
+    timeout_ms?: number;
+  };
   vnc?: {
     host?: string;
     port?: number;
@@ -23,6 +31,8 @@ export interface VMRemoteControlOptions {
     password?: string;
     domain?: string;
     absolute_mouse?: boolean;
+    input_retry_count?: number;
+    input_retry_delay_ms?: number;
   };
   webrtc?: {
     signaling_url?: string;
@@ -131,6 +141,22 @@ export interface OCRMatch {
   word?: number;
 }
 
+export interface VisionActionPlan {
+  summary?: string;
+  actions: InputEvent[];
+  raw?: string;
+}
+
+export interface VisionPlanOptions {
+  prompt?: string;
+  systemPrompt?: string;
+  model?: string;
+  baseUrl?: string;
+  temperature?: number;
+  maxTokens?: number;
+  timeoutMs?: number;
+}
+
 export type KeyAction = 'down' | 'up';
 
 export type InputEvent =
@@ -150,6 +176,7 @@ export interface RemoteControlSession extends EventEmitter {
   snapshot(): Promise<Frame>;
   ocrSnapshot(options?: OCRSnapshotOptions): Promise<OCRResult>;
   findText(query: string | RegExp, options?: FindTextOptions): Promise<OCRMatch[]>;
+  visionPlan(prompt: string, options?: VisionPlanOptions): Promise<VisionActionPlan>;
   sendInput(event: InputEvent): Promise<void>;
   setViewport(viewport: Viewport): Promise<void>;
   setClipboard(text: string): Promise<void>;

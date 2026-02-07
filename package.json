@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc -w",
-    "spice:e2e": "node scripts/spice_e2e.js"
+    "spice:e2e": "node scripts/spice_e2e.js",
+    "vision:plan": "node scripts/vision_plan.js"
   },
   "dependencies": {},
   "devDependencies": {

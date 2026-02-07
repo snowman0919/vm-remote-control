@@ -20,6 +20,8 @@ import type {
   OCRLine,
   OCRMatch,
   FindTextOptions,
+  VisionActionPlan,
+  VisionPlanOptions,
 } from './types.js';
 
 const DEFAULT_FRAME_INTERVAL_MS = 1000;
@@ -28,6 +30,11 @@ const DEFAULT_PNG_BUFFER = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=',
   'base64'
 );
+
+const DEFAULT_VISION_MODEL = 'qwen3-vl:8b';
+const DEFAULT_VISION_BASE_URL = 'http://127.0.0.1:11434';
+const DEFAULT_VISION_TIMEOUT_MS = 30000;
+const DEFAULT_VISION_SYSTEM_PROMPT = `You are a UI automation planner. Given a screenshot and a user goal, respond with JSON only: {"summary": string, "actions": InputEvent[]} where InputEvent matches the VM remote-control schema. Use absolute pixel coordinates from the screenshot for mouse actions. Keep actions minimal and safe.`;
 
 const execFileAsync = promisify(execFile);
 
@@ -42,6 +49,140 @@ function readPngDimensions(buffer: Buffer): { width: number; height: number } | 
 
 function normalizeText(value: string, matchCase: boolean): string {
   return matchCase ? value : value.toLowerCase();
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function resolveOllamaBaseUrl(baseUrl?: string): string {
+  const env = process.env.OLLAMA_HOST;
+  const raw = baseUrl ?? env ?? DEFAULT_VISION_BASE_URL;
+  if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
+  return `http://${raw}`;
+}
+
+function extractJsonFromText(text: string): string | null {
+  const fenced = text.match(/```json\s*([\s\S]+?)```/i);
+  if (fenced) return fenced[1].trim();
+  const first = text.indexOf('{');
+  const last = text.lastIndexOf('}');
+  if (first >= 0 && last > first) {
+    return text.slice(first, last + 1).trim();
+  }
+  return null;
+}
+
+function normalizeInputEvent(value: unknown): InputEvent | null {
+  if (!value || typeof value !== 'object') return null;
+  const event = value as Partial<InputEvent> & { type?: string };
+  switch (event.type) {
+    case 'key':
+      if (typeof event.key === 'string' && (event.action === 'down' || event.action === 'up')) {
+        return { type: 'key', key: event.key, action: event.action, modifiers: Array.isArray(event.modifiers) ? event.modifiers.map(String) : undefined };
+      }
+      return null;
+    case 'text':
+      if (typeof event.text === 'string') {
+        return { type: 'text', text: event.text };
+      }
+      return null;
+    case 'mouse-move':
+      if (typeof event.x === 'number' && typeof event.y === 'number') {
+        return { type: 'mouse-move', x: event.x, y: event.y };
+      }
+      return null;
+    case 'mouse-button':
+      if ((event.button === 'left' || event.button === 'middle' || event.button === 'right') && (event.action === 'down' || event.action === 'up')) {
+        const normalized: InputEvent = { type: 'mouse-button', button: event.button, action: event.action };
+        if (typeof event.x === 'number') normalized.x = event.x;
+        if (typeof event.y === 'number') normalized.y = event.y;
+        return normalized;
+      }
+      return null;
+    case 'mouse-scroll':
+      if (typeof event.deltaX === 'number' || typeof event.deltaY === 'number') {
+        return { type: 'mouse-scroll', deltaX: event.deltaX, deltaY: event.deltaY };
+      }
+      return null;
+    case 'clipboard':
+      if (typeof event.text === 'string') {
+        return { type: 'clipboard', text: event.text };
+      }
+      return null;
+    default:
+      return null;
+  }
+}
+
+function parseVisionPlan(text: string): VisionActionPlan {
+  const json = extractJsonFromText(text) ?? text.trim();
+  let parsed: any;
+  try {
+    parsed = JSON.parse(json);
+  } catch (error) {
+    throw new Error(`Failed to parse vision plan JSON: ${error}`);
+  }
+  const rawActions = Array.isArray(parsed?.actions) ? (parsed.actions as unknown[]) : [];
+  const actions = rawActions
+    .map((action: unknown) => normalizeInputEvent(action))
+    .filter((value): value is InputEvent => Boolean(value));
+  return {
+    summary: typeof parsed?.summary === 'string' ? parsed.summary : undefined,
+    actions,
+    raw: text,
+  };
+}
+
+async function runVisionPlan(imageBuffer: Buffer, prompt: string, options: VisionPlanOptions, logger: PluginContext['logger']): Promise<VisionActionPlan> {
+  const model = options.model ?? DEFAULT_VISION_MODEL;
+  const systemPrompt = options.systemPrompt ?? DEFAULT_VISION_SYSTEM_PROMPT;
+  const baseUrl = resolveOllamaBaseUrl(options.baseUrl);
+  const timeoutMs = options.timeoutMs ?? DEFAULT_VISION_TIMEOUT_MS;
+  const temperature = options.temperature;
+  const maxTokens = options.maxTokens;
+
+  const payload: Record<string, unknown> = {
+    model,
+    stream: false,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: prompt, images: [imageBuffer.toString('base64')] },
+    ],
+  };
+
+  if (temperature !== undefined || maxTokens !== undefined) {
+    payload.options = {};
+    if (temperature !== undefined) (payload.options as Record<string, unknown>).temperature = temperature;
+    if (maxTokens !== undefined) (payload.options as Record<string, unknown>).num_predict = maxTokens;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(`Ollama vision request failed (${response.status}): ${body}`);
+    }
+    const data = (await response.json()) as { message?: { content?: string } };
+    const content = data?.message?.content ?? '';
+    if (!content) {
+      throw new Error('Ollama vision response missing content');
+    }
+    return parseVisionPlan(content);
+  } catch (error) {
+    logger.error('Vision planning failed', { error });
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function runTesseract(
@@ -310,6 +451,46 @@ function keyToVirsh(key: string): string | null {
   return null;
 }
 
+const QMP_KEY_ALIASES: Record<string, string> = {
+  enter: 'ret',
+  return: 'ret',
+  tab: 'tab',
+  esc: 'esc',
+  escape: 'esc',
+  backspace: 'backspace',
+  space: 'spc',
+  up: 'up',
+  down: 'down',
+  left: 'left',
+  right: 'right',
+  shift: 'shift',
+  ctrl: 'ctrl',
+  control: 'ctrl',
+  alt: 'alt',
+  meta: 'meta',
+  dot: 'dot',
+  '.': 'dot',
+  '-': 'minus',
+  minus: 'minus',
+  '=': 'equal',
+  equal: 'equal',
+  '/': 'slash',
+  slash: 'slash',
+  ',': 'comma',
+  comma: 'comma',
+};
+
+function keyToQmp(key: string): string | null {
+  if (!key) return null;
+  const normalized = key.toLowerCase();
+  if (QMP_KEY_ALIASES[normalized]) return QMP_KEY_ALIASES[normalized];
+  if (normalized.length === 1) {
+    if (normalized >= 'a' && normalized <= 'z') return normalized;
+    if (normalized >= '0' && normalized <= '9') return normalized;
+  }
+  return null;
+}
+
 class SpiceVirshDriver implements BackendDriver {
   private mouseX = 0;
   private mouseY = 0;
@@ -320,7 +501,9 @@ class SpiceVirshDriver implements BackendDriver {
     private readonly domain: string,
     private readonly logger: PluginContext['logger'],
     viewport: Viewport,
-    private readonly absoluteMouse: boolean
+    private readonly absoluteMouse: boolean,
+    private readonly inputRetryCount: number,
+    private readonly inputRetryDelayMs: number
   ) {
     this.viewport = viewport;
   }
@@ -336,6 +519,39 @@ class SpiceVirshDriver implements BackendDriver {
 
   private async runQga(command: Record<string, unknown>): Promise<void> {
     await execFileAsync('virsh', ['qemu-agent-command', this.domain, JSON.stringify(command)]);
+  }
+
+  private async runWithRetry<T>(operation: () => Promise<T>, label: string): Promise<T> {
+    let attempt = 0;
+    while (true) {
+      try {
+        return await operation();
+      } catch (error) {
+        if (attempt >= this.inputRetryCount) {
+          throw error;
+        }
+        attempt += 1;
+        this.logger.warn(`${label} failed; retrying`, { attempt, error });
+        if (this.inputRetryDelayMs > 0) {
+          await sleep(this.inputRetryDelayMs);
+        }
+      }
+    }
+  }
+
+  private async sendQmpEvents(events: Array<Record<string, unknown>>): Promise<void> {
+    await this.runWithRetry(
+      () => this.runQmp({ execute: 'input_send_event', arguments: { events } }),
+      'QMP input'
+    );
+  }
+
+  private async sendKeyEvents(events: Array<{ key: string; down: boolean }>): Promise<void> {
+    const qmpEvents = events.map((event) => ({
+      type: 'key',
+      data: { down: event.down, key: { type: 'qcode', data: event.key } },
+    }));
+    await this.sendQmpEvents(qmpEvents);
   }
 
   async connect(): Promise<void> {
@@ -369,23 +585,52 @@ class SpiceVirshDriver implements BackendDriver {
   async sendInput(event: InputEvent): Promise<void> {
     switch (event.type) {
       case 'key': {
-        if (event.action !== 'down') return;
-        const key = keyToVirsh(event.key);
+        const key = keyToQmp(event.key);
         if (!key) {
           this.logger.warn('Unsupported key', { key: event.key });
           return;
         }
         const modifierKeys = (event.modifiers ?? [])
-          .map((modifier) => keyToVirsh(modifier))
+          .map((modifier) => keyToQmp(modifier))
           .filter((value): value is string => Boolean(value));
-        await this.runVirsh(['send-key', this.domain, ...modifierKeys, key]);
+
+        const keyEvents = event.action === 'down'
+          ? [...modifierKeys.map((mod) => ({ key: mod, down: true })), { key, down: true }]
+          : [{ key, down: false }, ...modifierKeys.map((mod) => ({ key: mod, down: false }))];
+
+        try {
+          await this.sendKeyEvents(keyEvents);
+        } catch (error) {
+          if (event.action === 'down') {
+            const fallbackKey = keyToVirsh(event.key);
+            const fallbackMods = (event.modifiers ?? [])
+              .map((modifier) => keyToVirsh(modifier))
+              .filter((value): value is string => Boolean(value));
+            if (fallbackKey) {
+              await this.runWithRetry(
+                () => this.runVirsh(['send-key', this.domain, ...fallbackMods, fallbackKey]),
+                'virsh send-key'
+              );
+              return;
+            }
+          }
+          throw error;
+        }
         return;
       }
       case 'text': {
         for (const char of event.text) {
+          const qmpKey = keyToQmp(char);
+          if (qmpKey) {
+            await this.sendKeyEvents([{ key: qmpKey, down: true }, { key: qmpKey, down: false }]);
+            continue;
+          }
           const key = keyToVirsh(char);
           if (key) {
-            await this.runVirsh(['send-key', this.domain, key]);
+            await this.runWithRetry(
+              () => this.runVirsh(['send-key', this.domain, key]),
+              'virsh send-key'
+            );
           }
         }
         return;
@@ -397,40 +642,36 @@ class SpiceVirshDriver implements BackendDriver {
           const max = 65535;
           const absX = Math.max(0, Math.min(max, Math.round((event.x / this.viewport.width) * max)));
           const absY = Math.max(0, Math.min(max, Math.round((event.y / this.viewport.height) * max)));
-          await this.runQmp({
-            execute: 'input_send_event',
-            arguments: {
-              events: [
-                { type: 'abs', data: { axis: 'x', value: absX } },
-                { type: 'abs', data: { axis: 'y', value: absY } }
-              ]
-            }
-          });
+          await this.sendQmpEvents([
+            { type: 'abs', data: { axis: 'x', value: absX } },
+            { type: 'abs', data: { axis: 'y', value: absY } },
+          ]);
           return;
         }
         const dx = Math.round(event.x - this.mouseX);
         const dy = Math.round(event.y - this.mouseY);
         this.mouseX = event.x;
         this.mouseY = event.y;
-        await this.runVirsh(['qemu-monitor-command', '--hmp', this.domain, `mouse_move ${dx} ${dy}`]);
+        await this.runWithRetry(
+          () => this.runVirsh(['qemu-monitor-command', '--hmp', this.domain, `mouse_move ${dx} ${dy}`]),
+          'HMP mouse_move'
+        );
         return;
       }
       case 'mouse-button': {
+        if (typeof event.x === 'number' && typeof event.y === 'number') {
+          await this.sendInput({ type: 'mouse-move', x: event.x, y: event.y });
+        }
         if (this.absoluteMouse) {
-          await this.runQmp({
-            execute: 'input_send_event',
-            arguments: {
-              events: [
-                {
-                  type: 'btn',
-                  data: {
-                    button: event.button === 'left' ? 'left' : event.button === 'right' ? 'right' : 'middle',
-                    down: event.action === 'down',
-                  }
-                }
-              ]
-            }
-          });
+          await this.sendQmpEvents([
+            {
+              type: 'btn',
+              data: {
+                button: event.button === 'left' ? 'left' : event.button === 'right' ? 'right' : 'middle',
+                down: event.action === 'down',
+              },
+            },
+          ]);
           return;
         }
         const bit = event.button === 'left' ? 1 : event.button === 'right' ? 2 : 4;
@@ -439,7 +680,10 @@ class SpiceVirshDriver implements BackendDriver {
         } else {
           this.mouseMask &= ~bit;
         }
-        await this.runVirsh(['qemu-monitor-command', '--hmp', this.domain, `mouse_button ${this.mouseMask}`]);
+        await this.runWithRetry(
+          () => this.runVirsh(['qemu-monitor-command', '--hmp', this.domain, `mouse_button ${this.mouseMask}`]),
+          'HMP mouse_button'
+        );
         return;
       }
       case 'mouse-scroll': {
@@ -453,12 +697,7 @@ class SpiceVirshDriver implements BackendDriver {
           events.push({ type: 'rel', data: { axis: 'hwheel', value: deltaX } });
         }
         if (!events.length) return;
-        await this.runQmp({
-          execute: 'input_send_event',
-          arguments: {
-            events,
-          },
-        });
+        await this.sendQmpEvents(events);
         return;
       }
       case 'clipboard': {
@@ -556,6 +795,7 @@ class VMRemoteControlSessionImpl extends EventEmitter implements RemoteControlSe
     public viewport: Viewport,
     readOnly: boolean,
     private readonly driver: BackendDriver,
+    private readonly visionOptions: VMRemoteControlOptions['vision'] | undefined,
     private readonly logger: PluginContext['logger']
   ) {
     super();
@@ -613,6 +853,20 @@ class VMRemoteControlSessionImpl extends EventEmitter implements RemoteControlSe
   async findText(query: string | RegExp, options?: FindTextOptions): Promise<OCRMatch[]> {
     const ocr = await this.ocrSnapshot();
     return findTextMatches(ocr, query, options);
+  }
+
+  async visionPlan(prompt: string, options: VisionPlanOptions = {}): Promise<VisionActionPlan> {
+    const frame = await this.snapshot();
+    const merged: VisionPlanOptions = {
+      model: options.model ?? this.visionOptions?.model,
+      baseUrl: options.baseUrl ?? this.visionOptions?.base_url,
+      systemPrompt: options.systemPrompt ?? this.visionOptions?.system_prompt,
+      temperature: options.temperature ?? this.visionOptions?.temperature,
+      maxTokens: options.maxTokens ?? this.visionOptions?.max_tokens,
+      timeoutMs: options.timeoutMs ?? this.visionOptions?.timeout_ms,
+    };
+    const instruction = prompt || options.prompt || 'Suggest the next UI action.';
+    return runVisionPlan(frame.buffer, instruction, merged, this.logger);
   }
 
   async sendInput(event: InputEvent): Promise<void> {
@@ -736,6 +990,7 @@ export class VMRemoteControlProvider implements RemoteControlProvider {
       viewport,
       readOnly,
       driver,
+      this.options.vision,
       this.context.logger
     );
 
@@ -801,7 +1056,16 @@ export class VMRemoteControlProvider implements RemoteControlProvider {
             throw new Error('SPICE backend requires a domain name (label or spice.domain)');
           }
           const absoluteMouse = this.options.spice?.absolute_mouse ?? true;
-          return new SpiceVirshDriver(domain, this.context.logger, viewport, absoluteMouse);
+          const inputRetryCount = this.options.spice?.input_retry_count ?? 2;
+          const inputRetryDelayMs = this.options.spice?.input_retry_delay_ms ?? 60;
+          return new SpiceVirshDriver(
+            domain,
+            this.context.logger,
+            viewport,
+            absoluteMouse,
+            inputRetryCount,
+            inputRetryDelayMs
+          );
         }
         return new MockBackendDriver(
           backend,

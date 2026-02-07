@@ -56,9 +56,54 @@ pnpm add openclaw-plugin-vm-remote-control
 ```
 
 **Notes/limits**
-- Keyboard input: basic keys/text via `virsh send-key` (best-effort).
-- Mouse input: QMP absolute moves + scroll (best-effort).
+- Keyboard input: QMP key down/up with retry; falls back to `virsh send-key` for down events.
+- Mouse input: QMP absolute moves + scroll; mouse clicks move-to-x/y first when provided and retry on failure.
 - Clipboard: tries QEMU guest agent first (`guest-set-clipboard`), falls back to keystroke injection.
+
+## Vision Planning (Qwen3-VL via Ollama)
+
+This plugin can call a local **Ollama** model (default: `qwen3-vl:8b`) to convert a screenshot into a structured input plan.
+
+### Prerequisites
+```bash
+ollama pull qwen3-vl:8b
+```
+
+### Configuration
+```json
+{
+  "plugins": {
+    "vm-remote-control": {
+      "vision": {
+        "model": "qwen3-vl:8b",
+        "base_url": "http://127.0.0.1:11434",
+        "timeout_ms": 30000
+      }
+    }
+  }
+}
+```
+
+### Usage
+```ts
+const plan = await session.visionPlan('Click the Start menu');
+console.log(plan.summary, plan.actions);
+for (const action of plan.actions) {
+  await session.sendInput(action);
+}
+```
+
+The vision planner expects **JSON-only** output in the format:
+```json
+{
+  "summary": "...",
+  "actions": [
+    { "type": "mouse-move", "x": 120, "y": 340 },
+    { "type": "mouse-button", "button": "left", "action": "down" },
+    { "type": "mouse-button", "button": "left", "action": "up" }
+  ]
+}
+```
 
 ## OCR / UI State Helpers
 The OCR helpers shell out to the `tesseract` CLI. Install it first:
@@ -143,6 +188,11 @@ await session.close();
   ```bash
   pnpm build
   VMRC_SPICE_DOMAIN=Win11 pnpm spice:e2e
+  ```
+
+- Vision plan demo (Ollama required):
+  ```bash
+  VMRC_SPICE_DOMAIN=Win11 pnpm vision:plan -- "Click the Start menu"
   ```
 
 ---

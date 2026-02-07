@@ -169,7 +169,10 @@ class SpiceVirshDriver implements BackendDriver {
           this.logger.warn('Unsupported key', { key: event.key });
           return;
         }
-        await this.runVirsh(['send-key', this.domain, key]);
+        const modifierKeys = (event.modifiers ?? [])
+          .map((modifier) => keyToVirsh(modifier))
+          .filter((value): value is string => Boolean(value));
+        await this.runVirsh(['send-key', this.domain, ...modifierKeys, key]);
         return;
       }
       case 'text': {

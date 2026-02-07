@@ -56,7 +56,7 @@ pnpm add openclaw-plugin-vm-remote-control
 
 **Notes/limits**
 - Keyboard input: basic keys/text via `virsh send-key` (best-effort).
-- Mouse input: best-effort via QEMU monitor; scroll not supported yet.
+- Mouse input: relative moves based on absolute coordinates (best-effort); scroll not supported yet.
 - Clipboard: not implemented yet (guest agent integration needed).
 
 ## Usage

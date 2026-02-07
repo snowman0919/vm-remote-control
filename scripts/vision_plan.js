@@ -16,6 +16,10 @@ async function main() {
   const provider = new VMRemoteControlProvider({
     default_backend: backend,
     spice: domain ? { domain } : undefined,
+    vnc: {
+      host: process.env.VMRC_VNC_HOST || '127.0.0.1',
+      port: process.env.VMRC_VNC_PORT ? Number(process.env.VMRC_VNC_PORT) : 5901,
+    },
     vision: {
       model: process.env.VMRC_VISION_MODEL || 'qwen3-vl:8b',
       base_url: process.env.VMRC_VISION_BASE_URL,

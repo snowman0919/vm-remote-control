@@ -143,7 +143,11 @@ async function resizeImageIfNeeded(imageBuffer: Buffer, maxWidth: number | undef
   const outPath = join(tmpDir, 'output.png');
   try {
     await writeFile(inPath, imageBuffer);
-    await execFileAsync('magick', [inPath, '-resize', `${maxWidth}`, outPath]);
+    try {
+      await execFileAsync('magick', [inPath, '-resize', `${maxWidth}`, outPath]);
+    } catch (error) {
+      await execFileAsync('convert', [inPath, '-resize', `${maxWidth}`, outPath]);
+    }
     return await readFile(outPath);
   } finally {
     await rm(tmpDir, { recursive: true, force: true });

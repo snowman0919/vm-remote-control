@@ -710,11 +710,19 @@ class SpiceVirshDriver implements BackendDriver {
   private async captureGuestScreenshot(): Promise<Buffer> {
     const path = this.guestScreenshotPath;
     const ps = `Add-Type -AssemblyName System.Windows.Forms; ` +
-      `$b = New-Object System.Drawing.Bitmap([System.Windows.Forms.SystemInformation]::VirtualScreen.Width, [System.Windows.Forms.SystemInformation]::VirtualScreen.Height); ` +
+      `$w = [System.Windows.Forms.SystemInformation]::VirtualScreen.Width; ` +
+      `$h = [System.Windows.Forms.SystemInformation]::VirtualScreen.Height; ` +
+      `$b = New-Object System.Drawing.Bitmap($w, $h); ` +
       `$g = [System.Drawing.Graphics]::FromImage($b); ` +
       `$g.CopyFromScreen([System.Windows.Forms.SystemInformation]::VirtualScreen.X, [System.Windows.Forms.SystemInformation]::VirtualScreen.Y, 0, 0, $b.Size); ` +
-      `$b.Save('${path}', [System.Drawing.Imaging.ImageFormat]::Png); ` +
-      `[Convert]::ToBase64String([IO.File]::ReadAllBytes('${path}'))`;
+      `$targetW = 800; ` +
+      `$scale = [Math]::Min(1.0, $targetW / $w); ` +
+      `$newW = [int]($w * $scale); ` +
+      `$newH = [int]($h * $scale); ` +
+      `$b2 = New-Object System.Drawing.Bitmap($b, $newW, $newH); ` +
+      `$ms = New-Object IO.MemoryStream; ` +
+      `$b2.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); ` +
+      `[Convert]::ToBase64String($ms.ToArray())`;
 
     const execResp = await this.runQga({
       execute: 'guest-exec',

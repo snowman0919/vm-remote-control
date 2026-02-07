@@ -49,7 +49,8 @@ await provider.init();
 const session = await provider.startSession({
   backend: 'mock',
   label: 'Example VM',
-  viewport: { width: 1024, height: 768 }
+  viewport: { width: 1024, height: 768 },
+  readOnly: false
 });
 
 session.on('frame', (frame) => {

@@ -120,16 +120,19 @@ class VMRemoteControlSessionImpl extends EventEmitter implements RemoteControlSe
   public status: RemoteControlSession['status'] = 'connecting';
   private frameTimer: NodeJS.Timeout | null = null;
   private frameIntervalMs: number;
+  private readonly readOnly: boolean;
 
   constructor(
     public readonly id: string,
     public readonly backend: VMBackend,
     public label: string | undefined,
     public viewport: Viewport,
+    readOnly: boolean,
     private readonly driver: BackendDriver,
     private readonly logger: PluginContext['logger']
   ) {
     super();
+    this.readOnly = readOnly;
     this.frameIntervalMs = DEFAULT_FRAME_INTERVAL_MS;
   }
 
@@ -167,6 +170,10 @@ class VMRemoteControlSessionImpl extends EventEmitter implements RemoteControlSe
   }
 
   async sendInput(event: InputEvent): Promise<void> {
+    if (this.readOnly) {
+      this.logger.warn('Ignored input event (read-only session)', { event });
+      return;
+    }
     return this.driver.sendInput(event);
   }
 
@@ -176,6 +183,10 @@ class VMRemoteControlSessionImpl extends EventEmitter implements RemoteControlSe
   }
 
   async setClipboard(text: string): Promise<void> {
+    if (this.readOnly) {
+      this.logger.warn('Ignored clipboard update (read-only session)');
+      return;
+    }
     await this.driver.setClipboard(text);
   }
 
@@ -224,7 +235,16 @@ function isPluginContext(value: unknown): value is PluginContext {
 function mergeOptions(...options: Array<VMRemoteControlOptions | undefined>): VMRemoteControlOptions {
   return options.reduce<VMRemoteControlOptions>((acc, current) => {
     if (!current) return acc;
-    return { ...acc, ...current, mock: { ...acc.mock, ...current.mock } };
+    return {
+      ...acc,
+      ...current,
+      vnc: { ...acc.vnc, ...current.vnc },
+      rdp: { ...acc.rdp, ...current.rdp },
+      spice: { ...acc.spice, ...current.spice },
+      webrtc: { ...acc.webrtc, ...current.webrtc },
+      custom: { ...acc.custom, ...current.custom },
+      mock: { ...acc.mock, ...current.mock },
+    };
   }, {});
 }
 
@@ -237,7 +257,9 @@ export class VMRemoteControlProvider implements RemoteControlProvider {
   constructor(contextOrOptions?: PluginContext | VMRemoteControlOptions, options?: VMRemoteControlOptions) {
     if (isPluginContext(contextOrOptions)) {
       this.context = contextOrOptions;
-      const configOptions = this.context.config.get<VMRemoteControlOptions>('vm-remote-control');
+      const configOptions =
+        this.context.config.get<VMRemoteControlOptions>('vm-remote-control') ??
+        this.context.config.get<VMRemoteControlOptions>('vm_remote_control');
       this.options = mergeOptions(configOptions, options);
     } else {
       this.context = createDefaultContext();
@@ -253,7 +275,12 @@ export class VMRemoteControlProvider implements RemoteControlProvider {
     const backend = params.backend ?? this.options.default_backend ?? 'mock';
     const viewport = params.viewport ?? DEFAULT_VIEWPORT;
     const label = params.label;
+    const readOnly = params.readOnly ?? false;
     const sessionId = `vmrc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    if (backend !== 'mock') {
+      this.context.logger.warn(`Backend ${backend} is running in mock mode until a driver is implemented.`);
+    }
 
     const driver = this.createDriver(backend, label, viewport);
     const session = new VMRemoteControlSessionImpl(
@@ -261,6 +288,7 @@ export class VMRemoteControlProvider implements RemoteControlProvider {
       backend,
       label,
       viewport,
+      readOnly,
       driver,
       this.context.logger
     );

@@ -5,7 +5,8 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "dev": "tsc -w"
+    "dev": "tsc -w",
+    "spice:e2e": "node scripts/spice_e2e.js"
   },
   "dependencies": {},
   "devDependencies": {

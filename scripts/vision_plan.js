@@ -31,8 +31,27 @@ async function main() {
   const plan = await session.visionPlan(prompt);
   console.log('Vision plan:', JSON.stringify(plan, null, 2));
 
+  const mappedActions = (plan.actions ?? []).flatMap((action) => {
+    if (!action || typeof action !== 'object') return [];
+    if (action.type === 'click' && typeof action.x === 'number' && typeof action.y === 'number') {
+      return [
+        { type: 'mouse-move', x: action.x, y: action.y },
+        { type: 'mouse-button', button: 'left', action: 'down', x: action.x, y: action.y },
+        { type: 'mouse-button', button: 'left', action: 'up', x: action.x, y: action.y },
+      ];
+    }
+    if (action.type === 'type' && typeof action.text === 'string') {
+      return [{ type: 'text', text: action.text }];
+    }
+    if (action.type === 'key') {
+      const keys = Array.isArray(action.keys) ? action.keys : action.key ? [action.key] : [];
+      return keys.map((key) => ({ type: 'key', key: String(key), action: 'down' }));
+    }
+    return [];
+  });
+
   if (!process.env.VMRC_DRY_RUN) {
-    for (const action of plan.actions) {
+    for (const action of mappedActions) {
       await session.sendInput(action);
     }
   }

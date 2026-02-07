@@ -5,10 +5,10 @@ This plugin provides a **remote-control provider** for virtual machines, enablin
 ## What’s Included (MVP)
 - **Provider API** with session lifecycle and events
 - **Mock backend** (default) that streams placeholder frames and accepts input
-- **Pluggable backend driver** interface (VNC/RDP/SPICE/WebRTC placeholders)
+- **Pluggable backend driver** interface (VNC/RDP/WebRTC placeholders)
 - **Session utilities**: snapshots, clipboard, viewport, health checks
 
-> The VNC/RDP/SPICE/WebRTC backends are currently mocked. This lets you develop against the API today while wiring real drivers later.
+> SPICE is now backed by `virsh` (screenshots + basic input). VNC/RDP/WebRTC remain mocked.
 
 ---
 
@@ -38,6 +38,26 @@ pnpm add openclaw-plugin-vm-remote-control
   }
 }
 ```
+
+### SPICE (virsh-backed)
+
+```json
+{
+  "plugins": {
+    "vm-remote-control": {
+      "default_backend": "spice",
+      "spice": {
+        "domain": "Win11"
+      }
+    }
+  }
+}
+```
+
+**Notes/limits**
+- Keyboard input: basic keys/text via `virsh send-key` (best-effort).
+- Mouse input: best-effort via QEMU monitor; scroll not supported yet.
+- Clipboard: not implemented yet (guest agent integration needed).
 
 ## Usage
 ```ts
@@ -93,7 +113,7 @@ await session.close();
 ## Backend Roadmap
 - **VNC**: connect/auth + frame capture + input injection
 - **RDP**: Windows-friendly sessions
-- **SPICE**: QEMU/KVM support
+- **SPICE**: virsh-backed (basic) ✅
 - **WebRTC**: low-latency streaming
 
 ## Development Notes

@@ -1,4 +1,7 @@
 import { EventEmitter } from 'events';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import { readFile } from 'fs/promises';
 import type {
   Frame,
   InputEvent,
@@ -17,6 +20,8 @@ const DEFAULT_PNG_BUFFER = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=',
   'base64'
 );
+
+const execFileAsync = promisify(execFile);
 
 interface BackendDriver {
   connect(): Promise<void>;
@@ -77,6 +82,151 @@ class MockBackendDriver implements BackendDriver {
 
   get interval(): number {
     return this.frameIntervalMs;
+  }
+}
+
+const KEY_ALIASES: Record<string, string> = {
+  enter: 'KEY_ENTER',
+  return: 'KEY_ENTER',
+  tab: 'KEY_TAB',
+  esc: 'KEY_ESC',
+  escape: 'KEY_ESC',
+  backspace: 'KEY_BACKSPACE',
+  space: 'KEY_SPACE',
+  up: 'KEY_UP',
+  down: 'KEY_DOWN',
+  left: 'KEY_LEFT',
+  right: 'KEY_RIGHT',
+  shift: 'KEY_LEFTSHIFT',
+  ctrl: 'KEY_LEFTCTRL',
+  control: 'KEY_LEFTCTRL',
+  alt: 'KEY_LEFTALT',
+  meta: 'KEY_LEFTMETA',
+};
+
+function keyToVirsh(key: string): string | null {
+  if (!key) return null;
+  const normalized = key.toLowerCase();
+  if (KEY_ALIASES[normalized]) return KEY_ALIASES[normalized];
+  if (normalized.length === 1) {
+    const char = normalized.toUpperCase();
+    if (char >= 'A' && char <= 'Z') return `KEY_${char}`;
+    if (char >= '0' && char <= '9') return `KEY_${char}`;
+    if (char === '.') return 'KEY_DOT';
+    if (char === '-') return 'KEY_MINUS';
+    if (char === '=') return 'KEY_EQUAL';
+    if (char === '/') return 'KEY_SLASH';
+    if (char === ',') return 'KEY_COMMA';
+  }
+  return null;
+}
+
+class SpiceVirshDriver implements BackendDriver {
+  private mouseX = 0;
+  private mouseY = 0;
+  private mouseMask = 0;
+
+  constructor(
+    private readonly domain: string,
+    private readonly logger: PluginContext['logger']
+  ) {}
+
+  private async runVirsh(args: string[]): Promise<string> {
+    const { stdout } = await execFileAsync('virsh', args);
+    return stdout.trim();
+  }
+
+  async connect(): Promise<void> {
+    await this.runVirsh(['domstate', this.domain]);
+    const display = await this.runVirsh(['domdisplay', this.domain]);
+    this.logger.info('SPICE session connected', { domain: this.domain, display });
+  }
+
+  async disconnect(): Promise<void> {
+    this.logger.info('SPICE session disconnected', { domain: this.domain });
+  }
+
+  async captureFrame(viewport?: Viewport): Promise<Frame> {
+    const filePath = `/tmp/vmrc_${this.domain}.png`;
+    await this.runVirsh(['screenshot', this.domain, '--file', filePath]);
+    const buffer = await readFile(filePath);
+    const targetViewport = viewport ?? DEFAULT_VIEWPORT;
+    return {
+      buffer,
+      mimeType: 'image/png',
+      width: targetViewport.width,
+      height: targetViewport.height,
+      timestamp: Date.now(),
+    };
+  }
+
+  async sendInput(event: InputEvent): Promise<void> {
+    switch (event.type) {
+      case 'key': {
+        if (event.action !== 'down') return;
+        const key = keyToVirsh(event.key);
+        if (!key) {
+          this.logger.warn('Unsupported key', { key: event.key });
+          return;
+        }
+        await this.runVirsh(['send-key', this.domain, key]);
+        return;
+      }
+      case 'text': {
+        for (const char of event.text) {
+          const key = keyToVirsh(char);
+          if (key) {
+            await this.runVirsh(['send-key', this.domain, key]);
+          }
+        }
+        return;
+      }
+      case 'mouse-move': {
+        const dx = Math.round(event.x - this.mouseX);
+        const dy = Math.round(event.y - this.mouseY);
+        this.mouseX = event.x;
+        this.mouseY = event.y;
+        await this.runVirsh(['qemu-monitor-command', '--hmp', this.domain, `mouse_move ${dx} ${dy}`]);
+        return;
+      }
+      case 'mouse-button': {
+        const bit = event.button === 'left' ? 1 : event.button === 'right' ? 2 : 4;
+        if (event.action === 'down') {
+          this.mouseMask |= bit;
+        } else {
+          this.mouseMask &= ~bit;
+        }
+        await this.runVirsh(['qemu-monitor-command', '--hmp', this.domain, `mouse_button ${this.mouseMask}`]);
+        return;
+      }
+      case 'mouse-scroll': {
+        this.logger.warn('Mouse scroll not implemented for SPICE driver');
+        return;
+      }
+      case 'clipboard': {
+        await this.setClipboard(event.text);
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  async setClipboard(text: string): Promise<void> {
+    this.logger.warn('Clipboard set not supported via virsh yet', { length: text.length });
+  }
+
+  async setViewport(): Promise<void> {
+    // SPICE viewport handled by guest agent; no-op for now.
+  }
+
+  async healthCheck(): Promise<boolean> {
+    try {
+      await this.runVirsh(['domstate', this.domain]);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -348,6 +498,13 @@ export class VMRemoteControlProvider implements RemoteControlProvider {
             frameInterval,
             this.context.logger
           );
+        }
+        if (backend === 'spice') {
+          const domain = label ?? this.options.spice?.domain;
+          if (!domain) {
+            throw new Error('SPICE backend requires a domain name (label or spice.domain)');
+          }
+          return new SpiceVirshDriver(domain, this.context.logger);
         }
         return new MockBackendDriver(
           backend,

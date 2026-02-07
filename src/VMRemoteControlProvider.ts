@@ -713,7 +713,8 @@ class SpiceVirshDriver implements BackendDriver {
       `$b = New-Object System.Drawing.Bitmap([System.Windows.Forms.SystemInformation]::VirtualScreen.Width, [System.Windows.Forms.SystemInformation]::VirtualScreen.Height); ` +
       `$g = [System.Drawing.Graphics]::FromImage($b); ` +
       `$g.CopyFromScreen([System.Windows.Forms.SystemInformation]::VirtualScreen.X, [System.Windows.Forms.SystemInformation]::VirtualScreen.Y, 0, 0, $b.Size); ` +
-      `$b.Save('${path}', [System.Drawing.Imaging.ImageFormat]::Png);`;
+      `$b.Save('${path}', [System.Drawing.Imaging.ImageFormat]::Png); ` +
+      `[Convert]::ToBase64String([IO.File]::ReadAllBytes('${path}'))`;
 
     const execResp = await this.runQga({
       execute: 'guest-exec',
@@ -730,18 +731,27 @@ class SpiceVirshDriver implements BackendDriver {
     }
 
     // Wait for completion
-    for (let i = 0; i < 10; i++) {
+    let outData: string | undefined;
+    for (let i = 0; i < 20; i++) {
       const status = await this.runQga({
         execute: 'guest-exec-status',
         arguments: { pid },
       });
+      if (status?.return?.out_data) {
+        outData = status.return.out_data;
+      }
       if (status?.return?.exited) break;
       await new Promise((r) => setTimeout(r, 200));
     }
 
-    // Give the file system a moment to flush
-    await new Promise((r) => setTimeout(r, 500));
+    if (outData) {
+      const stdout = Buffer.from(outData, 'base64').toString('utf8').trim();
+      if (stdout) {
+        return Buffer.from(stdout, 'base64');
+      }
+    }
 
+    // Fallback: read file via guest-file-read
     const readFileOnce = async (): Promise<Buffer> => {
       const open = await this.runQga({
         execute: 'guest-file-open',

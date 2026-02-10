@@ -40,6 +40,31 @@ pnpm add openclaw-plugin-vm-remote-control
 }
 ```
 
+### RDP (xfreerdp + xdotool)
+
+```json
+{
+  "plugins": {
+    "vm-remote-control": {
+      "default_backend": "rdp",
+      "rdp": {
+        "host": "192.168.122.13",
+        "port": 3389,
+        "username": "windows-VM",
+        "window_title": "FreeRDP",
+        "display": ":0"
+      }
+    }
+  }
+}
+```
+
+**Notes**
+- If no password is provided, launch `xfreerdp` manually and keep the window open.
+- The driver captures the RDP window via `import` and sends input via `xdotool`.
+
+---
+
 ### VNC (vncsnapshot + vncdo)
 
 ```json
@@ -202,7 +227,7 @@ await session.close();
 
 ## Backend Roadmap
 - **VNC**: basic connect + capture + input ✅
-- **RDP**: Windows-friendly sessions
+- **RDP**: window-attached (xfreerdp + xdotool) ✅
 - **SPICE**: virsh-backed (basic) ✅
 - **WebRTC**: low-latency streaming
 

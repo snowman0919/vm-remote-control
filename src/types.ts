@@ -25,6 +25,8 @@ export interface VMRemoteControlOptions {
     port?: number;
     username?: string;
     password?: string;
+    window_title?: string;
+    display?: string;
   };
   spice?: {
     host?: string;

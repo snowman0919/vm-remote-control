@@ -594,6 +594,136 @@ class VncDriver implements BackendDriver {
   }
 }
 
+class RdpDriver implements BackendDriver {
+  private windowId: string | null = null;
+
+  constructor(
+    private readonly host: string,
+    private readonly port: number,
+    private readonly username: string | undefined,
+    private readonly password: string | undefined,
+    private readonly windowTitle: string,
+    private readonly display: string | undefined,
+    private readonly logger: PluginContext['logger']
+  ) {}
+
+  private async runXdotool(args: string[]): Promise<string> {
+    const env = this.display ? { ...process.env, DISPLAY: this.display } : process.env;
+    const { stdout } = await execFileAsync('xdotool', args, { env });
+    return stdout.trim();
+  }
+
+  private async resolveWindowId(): Promise<string> {
+    if (this.windowId) return this.windowId;
+    const id = await this.runXdotool(['search', '--name', this.windowTitle]);
+    const first = id.split('\n')[0];
+    if (!first) throw new Error('RDP window not found');
+    this.windowId = first;
+    return first;
+  }
+
+  async connect(): Promise<void> {
+    if (this.password) {
+      this.logger.info('RDP password provided; launching freerdp window');
+      const env = this.display ? { ...process.env, DISPLAY: this.display } : process.env;
+      const args = [
+        `/v:${this.host}:${this.port}`,
+        `/u:${this.username ?? ''}`,
+        `/p:${this.password}`,
+        '/cert:ignore',
+        '+clipboard',
+      ];
+      execFile('xfreerdp', args, { env });
+    } else {
+      this.logger.info('No RDP password provided; expecting existing freerdp window');
+    }
+    await this.resolveWindowId();
+    this.logger.info('RDP session connected', { host: this.host, port: this.port, window: this.windowId });
+  }
+
+  async disconnect(): Promise<void> {
+    this.logger.info('RDP session disconnected', { host: this.host, port: this.port });
+  }
+
+  async captureFrame(): Promise<Frame> {
+    const windowId = await this.resolveWindowId();
+    const filePath = `/tmp/vmrc_rdp_${this.host.replace(/\W/g, '_')}_${this.port}.png`;
+    const env = this.display ? { ...process.env, DISPLAY: this.display } : process.env;
+    await execFileAsync('import', ['-window', windowId, filePath], { env });
+    const buffer = await readFile(filePath);
+    const detected = readPngDimensions(buffer) ?? DEFAULT_VIEWPORT;
+    return {
+      buffer,
+      mimeType: 'image/png',
+      width: detected.width,
+      height: detected.height,
+      timestamp: Date.now(),
+    };
+  }
+
+  async sendInput(event: InputEvent): Promise<void> {
+    const windowId = await this.resolveWindowId();
+    await this.runXdotool(['windowactivate', '--sync', windowId]);
+    switch (event.type) {
+      case 'key': {
+        if (event.action !== 'down') return;
+        const combo = (event.modifiers ?? []).concat(event.key).join('+');
+        await this.runXdotool(['key', combo]);
+        return;
+      }
+      case 'text': {
+        await this.runXdotool(['type', '--delay', '10', event.text]);
+        return;
+      }
+      case 'mouse-move': {
+        await this.runXdotool(['mousemove', String(Math.round(event.x)), String(Math.round(event.y))]);
+        return;
+      }
+      case 'mouse-button': {
+        const button = event.button === 'left' ? '1' : event.button === 'right' ? '3' : '2';
+        if (event.action === 'down') {
+          await this.runXdotool(['mousedown', button]);
+        } else {
+          await this.runXdotool(['mouseup', button]);
+        }
+        return;
+      }
+      case 'mouse-scroll': {
+        const deltaY = event.deltaY ?? 0;
+        if (deltaY > 0) {
+          await this.runXdotool(['click', '5']);
+        } else if (deltaY < 0) {
+          await this.runXdotool(['click', '4']);
+        }
+        return;
+      }
+      case 'clipboard': {
+        await this.setClipboard(event.text);
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  async setClipboard(text: string): Promise<void> {
+    await this.runXdotool(['type', '--delay', '5', text]);
+  }
+
+  async setViewport(): Promise<void> {
+    // handled by RDP window size
+  }
+
+  async healthCheck(): Promise<boolean> {
+    try {
+      await this.resolveWindowId();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 const KEY_ALIASES: Record<string, string> = {
   enter: 'KEY_ENTER',
   return: 'KEY_ENTER',
@@ -1349,6 +1479,20 @@ export class VMRemoteControlProvider implements RemoteControlProvider {
           const host = this.options.vnc?.host ?? '127.0.0.1';
           const port = this.options.vnc?.port ?? 5901;
           return new VncDriver(host, port, this.options.vnc?.password, this.context.logger);
+        }
+        if (backend === 'rdp') {
+          const host = this.options.rdp?.host ?? '127.0.0.1';
+          const port = this.options.rdp?.port ?? 3389;
+          const title = this.options.rdp?.window_title ?? 'FreeRDP';
+          return new RdpDriver(
+            host,
+            port,
+            this.options.rdp?.username,
+            this.options.rdp?.password,
+            title,
+            this.options.rdp?.display,
+            this.context.logger
+          );
         }
         return new MockBackendDriver(
           backend,
